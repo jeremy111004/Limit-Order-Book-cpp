@@ -1,14 +1,11 @@
 #pragma once
 #include "Order.hpp"
 #include <atomic>
-#include <boost/circular_buffer.hpp>
-#include <cstdint>
-#include <functional>
 #include <list>
 #include <map>
 #include <unordered_map>
 #include <vector>
-using PriceLevel = boost::circular_buffer<Order *>;
+
 class LOB {
 public:
   // Core API
@@ -25,12 +22,12 @@ public:
 
 private:
   // price level with orders queued
-  std::map<uint32_t, PriceLevel> priceMapAsk;
-  std::map<uint32_t, PriceLevel, std::greater<uint32_t>> priceMapBid;
+  std::map<uint32_t, std::list<Order>> priceMapAsk;
+  std::map<uint32_t, std::list<Order>, std::greater<uint32_t>> priceMapBid;
 
   // Maps ID to the specific position in the price level list to retrieve Orders
   // faster.
-  std::unordered_map<uint64_t, PriceLevel::iterator> orderMap;
+  std::unordered_map<uint64_t, std::list<Order>::iterator> orderMap;
 
   std::vector<matchResult> matchedList;
 };
