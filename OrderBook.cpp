@@ -15,6 +15,13 @@ uint64_t LOB::generateID() {
   return nextID.fetch_add(1, std::memory_order_relaxed);
 }
 
+void LOB::reset() {
+  priceMapAsk.clear();
+  priceMapBid.clear();
+  orderMap.clear();
+  matchedList.clear();
+}
+
 void LOB::addAsk(const Order &ord) {
   std::list<Order> &listAtPriceLevel = (priceMapAsk[ord.price]);
   listAtPriceLevel.push_back(ord);

@@ -14,6 +14,7 @@ public:
   void matching();
   void cancelOrder(uint64_t id);
   uint64_t editOrder(uint64_t id, uint32_t newPrice, uint32_t newQuantity);
+  void reset();
 
   // Utilities
   uint64_t generateID();
