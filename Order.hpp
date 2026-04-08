@@ -6,6 +6,9 @@ struct Order {
   uint32_t price;
   uint32_t quantity;
   char type;
+  bool enabled;
+  Order *next;
+  Order *prev;
   // 'A' for Ask, 'B' for Bid
   // note: id > other.id is a seniority comparison, as ID1
   // > ID2 means that ID2 is older.

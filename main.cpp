@@ -19,41 +19,55 @@ Order OrdersGenerator(uint32_t price, char type, uint64_t id) {
   std::uniform_int_distribution<> distribP(min, max);
   std::uniform_int_distribution<> distribQ(1, 50);
 
-  return {id, static_cast<uint32_t>(distribP(gen)),
-          static_cast<uint32_t>(distribQ(gen)), type};
+  // C++20 Designated Initializers: Clear, safe, and warning-free
+  return Order{.id = id,
+               .price = static_cast<uint32_t>(distribP(gen)),
+               .quantity = static_cast<uint32_t>(distribQ(gen)),
+               .type = type,
+               .enabled = true,
+               .next = nullptr,
+               .prev = nullptr};
 }
 
 static void LOB_Naive_Continuous(benchmark::State &state) {
   LOB lob;
   std::vector<Order> orders;
-  int num_orders = 1000000000;
-  for (int i = 0; i < num_orders; i++) {
+
+  // 10^5 is a robust sample size for L1/L2 cache testing.
+  // 10^9 will trigger a Linux OOM (Out Of Memory) crash.
+  const uint32_t num_orders = 1000000;
+
+  orders.reserve(num_orders * 2);
+
+  // Setup Phase: Prepare data outside the timed loop
+  for (uint32_t i = 0; i < num_orders; i++) {
     uint64_t idB = lob.generateID();
     uint64_t idA = lob.generateID();
 
-    auto orderBid = OrdersGenerator(100, 'B', idB);
-    auto orderAsk = OrdersGenerator(100, 'A', idA);
-    orders.push_back(orderAsk);
-    orders.push_back(orderBid);
+    orders.push_back(OrdersGenerator(100, 'A', idA));
+    orders.push_back(OrdersGenerator(100, 'B', idB));
+    if (i % 100000 == 0) {
+      lob.seeAskRank();
+      std::cout << '\n';
+      lob.seeBidRank();
+    }
   }
 
+  // Measurement Loop
   for (auto _ : state) {
-    for (const auto &ord : orders) {
-      if (ord.type == 'A') {
-        lob.addAsk(ord);
-      } else {
-        lob.addBid(ord);
-      }
-
-      lob.matching();
+    for (auto &ord : orders) {
+      lob.addOrder(ord);
     }
-    benchmark::DoNotOptimize(lob);
+
+    // Forces compiler to finish all memory writes before proceeding
+    benchmark::ClobberMemory();
 
     state.PauseTiming();
-    lob.reset();
+    lob.reset(); // Crucial: Clear the state for the next iteration
     state.ResumeTiming();
   }
-  state.SetItemsProcessed(state.iterations() * num_orders);
+
+  state.SetItemsProcessed(state.iterations() * num_orders * 2);
 }
 
 BENCHMARK(LOB_Naive_Continuous)->Unit(benchmark::kMicrosecond);

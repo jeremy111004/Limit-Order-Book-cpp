@@ -1,14 +1,11 @@
 #include "OrderBook.hpp"
+#include "Order.hpp"
 #include <atomic>
 #include <cstdint>
-
 #include <iostream>
-#include <list>
 #include <map>
-
 #include <unordered_map>
 #include <utility>
-#include <vector>
 
 uint64_t LOB::generateID() {
   static std::atomic<uint64_t> nextID{1};
@@ -22,145 +19,137 @@ void LOB::reset() {
   matchedList.clear();
 }
 
-void LOB::addAsk(const Order &ord) {
-  std::list<Order> &listAtPriceLevel = (priceMapAsk[ord.price]);
-  listAtPriceLevel.push_back(ord);
-  orderMap[ord.id] = std::prev(listAtPriceLevel.end());
+template <typename OppositeMap, typename Tcompare>
+void LOB::matching(Order &ord, OppositeMap &oppositeMap, Tcompare tcompare) {
+  while (ord.quantity > 0 && !oppositeMap.empty()) {
+    auto it =
+        oppositeMap.begin(); // this is a iterator (price, price level list)
+    uint32_t current_best_price = it->first;
+
+    if (tcompare(
+            ord.price,
+            current_best_price)) { // tcompare is here bc we don't use the same
+      //  comparison for ask -> bid or bid -> ask.
+      break; // we break if the best bid/ask price isn't matching our ask/bid
+             // price.
+    }
+    auto &lstPriceLevel = it->second;
+    // we drain the orders at the found price level :
+    while (ord.quantity > 0 && lstPriceLevel.head != nullptr) {
+      auto &matchedOrder = *lstPriceLevel.head;
+      uint32_t qmatched = std::min(ord.quantity, matchedOrder.quantity);
+      ord.quantity -= qmatched;
+      matchedOrder.quantity -= qmatched;
+
+      // Metadata draining logic
+      lstPriceLevel.totalVolume -=
+          static_cast<uint64_t>(qmatched) * current_best_price;
+
+      matchedList.push_back(
+          {ord.id, matchedOrder.id, current_best_price, qmatched});
+      // removal and update logic
+      if (matchedOrder.quantity == 0) {
+        lstPriceLevel.numberOfOrders -= 1; // Metadata draining logic
+
+        orderMap.erase(matchedOrder.id);
+        auto &newHead = matchedOrder.next;
+        if (newHead != nullptr) {
+          newHead->prev = nullptr;
+        }
+        if (matchedOrder.next == nullptr) {
+          (lstPriceLevel).tail = nullptr;
+        }
+        lstPriceLevel.head = newHead;
+      }
+    }
+
+    if (lstPriceLevel.head == nullptr && lstPriceLevel.tail == nullptr) {
+      oppositeMap.erase(it);
+    }
+  }
 }
 
-void LOB::addBid(const Order &ord) {
-  std::list<Order> &listAtPriceLevel = (priceMapBid[ord.price]);
-  listAtPriceLevel.push_back(ord);
-  orderMap[ord.id] = std::prev(listAtPriceLevel.end());
-}
+void LOB::addOrder(Order &ord) {
+  if (ord.type == 'B') {
+    matching(ord, priceMapAsk, std::less<uint32_t>());
+  } else {
+    matching(ord, priceMapBid, std::greater<uint32_t>());
+  };
 
-void LOB::matching() {
-  // As long as there're price levels in those lists and the bids are
-  // greater or equal than the asks, we loop.
-  while (!priceMapBid.empty() && !priceMapAsk.empty() &&
-         (priceMapBid.begin()->first) >= priceMapAsk.begin()->first) {
-    std::list<Order> &list_of_asks = priceMapAsk.begin()->second;
-    std::list<Order> &list_of_bids = priceMapBid.begin()->second;
-    bool isAsksEmptyatPLVL{0};
-    bool isBidsEmptyatPLVL{0};
-    // as long as in each price level we have orders, we match them.
-    while (!list_of_asks.empty() && !list_of_bids.empty()) {
-      // now we match them until one quantity is == 0;
+  // if the order hasn't been fully matched (or not matched at all) we have to
+  // actually save it:
+  if (ord.quantity > 0) {
+    // this line create an order directly in the pre allocated memory Arena
+    Order *order_ptr = new (arena.allocate(sizeof(Order))) Order(ord);
 
-      auto &firstAsk = list_of_asks.front();
-      auto &firstBid = list_of_bids.front();
-      bool more_asks = firstAsk.quantity > firstBid.quantity;
-      uint32_t quantityMatched = 0;
-      if (more_asks) {
-        quantityMatched = firstBid.quantity;
-        firstBid.quantity = 0;
-        firstAsk.quantity -= quantityMatched;
-      } else {
-        quantityMatched = firstAsk.quantity;
-        firstAsk.quantity = 0;
-        firstBid.quantity -= quantityMatched;
-      }
-      // we check who's empty;
-      bool isTheAskEmpty = firstAsk.quantity == 0;
-      bool isTheBidEmpty = firstBid.quantity == 0;
+    auto &priceLevel =
+        (ord.type == 'B') ? priceMapBid[ord.price] : priceMapAsk[ord.price];
 
-      matchResult matched = {firstAsk.id, firstBid.id, quantityMatched,
-                             firstAsk.price};
-      if (isTheAskEmpty) {
-        orderMap.erase(firstAsk.id);
-        list_of_asks.pop_front();
-      }
-      if (isTheBidEmpty) {
-        orderMap.erase(firstBid.id);
-        list_of_bids.pop_front();
-      }
-
-      matchedList.push_back(matched);
+    if (priceLevel.head == nullptr) { // if the price level is empty we use
+                                      // the order as the tail and the head
+      priceLevel.head = order_ptr;
+      priceLevel.tail = order_ptr;
+    } else {
+      // we link the current order with the last tail;
+      order_ptr->prev = priceLevel.tail;
+      priceLevel.tail->next = order_ptr;
+      priceLevel.tail =
+          order_ptr; // and now the current order becomes the tail,;
     }
-    isAsksEmptyatPLVL = list_of_asks.empty();
-    isBidsEmptyatPLVL = list_of_bids.empty();
-    if (isAsksEmptyatPLVL) {
-      priceMapAsk.erase(priceMapAsk.begin());
-    }
-    if (isBidsEmptyatPLVL) {
-      priceMapBid.erase(priceMapBid.begin());
-    }
+
+    priceLevel.numberOfOrders += 1;
+    priceLevel.totalVolume += static_cast<uint64_t>(ord.quantity) * ord.price;
+
+    // just adding the order coordinates to the map;
+    orderMap[ord.id] = {order_ptr, &priceLevel};
   }
 }
 
 void LOB::cancelOrder(uint64_t id) {
-  // safety check, exist is an iterator to a pair
-  // (ID,std::list<Order>::iterator)
   auto exist = orderMap.find(id);
   if (exist == orderMap.end())
     return;
-  // this is the orderIterator, that contains its address in the Ask/Bid price
-  // map
-  auto ordIterator = exist->second;
+  auto ordEntry = exist->second;
+  auto ordptr = ordEntry.ordptr;
+  auto listAtPriceLevel = ordEntry.levelptr;
 
-  auto isAnAsk = ordIterator->type == 'A';
-  auto priceLevel = ordIterator->price;
-  if (isAnAsk) {
-    // itpriceLvl is an iterator to a pair (price Level, std::list<Order>)
-    auto itpriceLvl = priceMapAsk.find(priceLevel);
-    auto &listAtPriceLevel = itpriceLvl->second;
-    // ordIterator contains the * of the Order so we can use it to delete from
-    // the list directly
-    listAtPriceLevel.erase(ordIterator);
-    // itpriceLvl contains the * of the price Level and list.
-    if (listAtPriceLevel.empty())
-      priceMapAsk.erase(itpriceLvl);
-
-  } else {
-    auto itpriceLvl = priceMapBid.find(priceLevel);
-    auto &listAtPriceLevel = itpriceLvl->second;
-    listAtPriceLevel.erase(ordIterator);
-    if (listAtPriceLevel.empty())
-      priceMapBid.erase(itpriceLvl);
+  // Neighbor linking
+  if (ordptr->prev) {
+    ordptr->prev->next = ordptr->next;
+  } else { // if there's no prev it was a head
+    listAtPriceLevel->head =
+        ordptr->next; // so the new head is either nullptr or ordptr->next;
   }
-  // exist contains the exact position of the ID + iterator for this order
-  orderMap.erase(exist);
+  if (ordptr->next) {
+    ordptr->next->prev = ordptr->prev;
+  } else { // if there's no next then it was a tail
+    listAtPriceLevel->tail = ordptr->prev;
+  }
+
+  // we decrement the metadata of the price level
+  listAtPriceLevel->numberOfOrders--;
+  // Use 64 bit promotion to prevent overflow before subtraction
+  listAtPriceLevel->totalVolume -=
+      static_cast<uint64_t>(ordptr->price) * ordptr->quantity;
+
+  ordptr->next = nullptr;
+  ordptr->prev = nullptr;
+
+  orderMap.erase(id);
 }
 
-uint64_t LOB::editOrder(uint64_t id, uint32_t newPrice, uint32_t newQuantity) {
-  // we check if it's a valid ID
-  auto it = orderMap.find(id);
-  if (it == orderMap.end())
-    return 0;
-  auto &existingOrder = *(it->second);
-
-  char type = existingOrder.type;
-  uint32_t oldPrice = existingOrder.price;
-  uint32_t oldQuantity = existingOrder.quantity;
-
-  // if price changed or quantity increased the priority will be gone.
-  bool priceChanged = (oldPrice != newPrice);
-  bool quantityIncreased = (newQuantity > oldQuantity);
-
-  if (priceChanged || quantityIncreased) {
-    cancelOrder(id);
-    uint64_t newId = generateID();
-    Order newOrder = {newId, newPrice, newQuantity, type};
-    if (type == 'A') {
-      addAsk(newOrder);
-    } else {
-      addBid(newOrder);
-    }
-    return newId;
-  } else {
-    existingOrder.quantity = newQuantity;
-    return id;
-  }
-}
-// those two functions simply print the Orders priorities
-// within the different price levels
 void LOB::seeBidRank() const {
   for (auto &g : priceMapBid) {
     std::cout << '\n'
-              << "price level is " << g.first
+              << "Bids price level is " << g.first
               << " and the orders priorities are: ";
-    for (auto &i : g.second) {
-      std::cout << i.id << " ";
+    Order *dummyptr = g.second.head;
+    for (int i = 0; i < g.second.numberOfOrders; i++) {
+      std::cout << "  " << dummyptr->id;
+
+      if (!dummyptr->next)
+        break;
+      dummyptr = dummyptr->next;
     }
   }
 }
@@ -168,10 +157,14 @@ void LOB::seeBidRank() const {
 void LOB::seeAskRank() const {
   for (auto &g : priceMapAsk) {
     std::cout << '\n'
-              << "price level is " << g.first
+              << "Asks price level is " << g.first
               << " and the orders priorities are: ";
-    for (auto &i : g.second) {
-      std::cout << i.id << " ";
+    Order *dummyptr = g.second.head;
+    for (int i = 0; i < g.second.numberOfOrders; i++) {
+      std::cout << "  " << dummyptr->id;
+      if (!dummyptr->next)
+        break;
+      dummyptr = dummyptr->next;
     }
   }
 }
