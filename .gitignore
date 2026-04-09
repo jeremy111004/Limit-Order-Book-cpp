@@ -1,1 +1,7 @@
+lob_bench
+*.o
+*.out
+perf.data
+perf.data.old
+mainDebug.cpp
 exchange

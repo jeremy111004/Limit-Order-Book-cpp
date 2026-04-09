@@ -1,4 +1,5 @@
 #include "Order.hpp"
+#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <memory>
@@ -9,7 +10,8 @@ class Arena {
 public:
   Arena(size_t N)
       : buffer_(std::unique_ptr<char[]>(new char[N])), ptr_(buffer_.get()),
-        Bsize(N) {};
+        freeList_(std::unique_ptr<char[]>(new char[N / 10])),
+        ptrFreeList_(freeList_.get()), Bsize(N), Fsize(N / 10) {};
   Arena(const Arena &) = delete;
   Arena &operator=(const Arena &) = delete;
 
@@ -22,18 +24,27 @@ public:
 
   auto allocate(size_t n) -> char * {
     auto size = align_up(n);
-    auto remainingSpace =
-        static_cast<decltype(size)>(buffer_.get() + Bsize - ptr_);
-    if (size <= remainingSpace) {
-      char *address = ptr_;
-      ptr_ += size;
+    if (freeList_[0]) {
+
+      char *address = ptrFreeList_;
+      ptrFreeList_ += size;
       return address;
     } else {
-      return nullptr;
+      auto remainingSpace =
+          static_cast<decltype(size)>(buffer_.get() + Bsize - ptr_);
+      if (size <= remainingSpace) {
+        char *address = ptr_;
+        ptr_ += size;
+        return address;
+      } else {
+        return nullptr;
+      }
     }
   };
 
-  auto deallocate(char *p, size_t n) noexcept -> void {};
+  auto deallocate(char *p, size_t n) noexcept -> void {
+
+  };
 
 private:
   static auto align_up(size_t n) noexcept -> size_t {
@@ -45,6 +56,9 @@ private:
   };
 
   const std::unique_ptr<char[]> buffer_;
+  const std::unique_ptr<char[]> freeList_;
   char *ptr_;
+  char *ptrFreeList_;
   const size_t Bsize;
+  const size_t Fsize;
 };

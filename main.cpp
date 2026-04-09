@@ -1,5 +1,7 @@
 #include "OrderBook.hpp"
 #include <benchmark/benchmark.h>
+#include <benchmark/benchmark_api.h>
+#include <benchmark/registration.h>
 #include <benchmark/state.h>
 #include <benchmark/utils.h>
 #include <cstdint>
@@ -21,54 +23,40 @@ Order OrdersGenerator(uint32_t price, char type, uint64_t id) {
 
   // C++20 Designated Initializers: Clear, safe, and warning-free
   return Order{.id = id,
+               .next = nullptr,
+               .prev = nullptr,
                .price = static_cast<uint32_t>(distribP(gen)),
                .quantity = static_cast<uint32_t>(distribQ(gen)),
                .type = type,
-               .enabled = true,
-               .next = nullptr,
-               .prev = nullptr};
+               .enabled = true};
 }
 
 static void LOB_Naive_Continuous(benchmark::State &state) {
-  LOB lob;
-  std::vector<Order> orders;
+  LOB LobForGeneration;
+  const int numberOrders = 10000;
+  std::vector<Order> SyntheticData;
+  for (int c = 0; c < numberOrders; c++) {
 
-  // 10^5 is a robust sample size for L1/L2 cache testing.
-  // 10^9 will trigger a Linux OOM (Out Of Memory) crash.
-  const uint32_t num_orders = 1000000;
-
-  orders.reserve(num_orders * 2);
-
-  // Setup Phase: Prepare data outside the timed loop
-  for (uint32_t i = 0; i < num_orders; i++) {
-    uint64_t idB = lob.generateID();
-    uint64_t idA = lob.generateID();
-
-    orders.push_back(OrdersGenerator(100, 'A', idA));
-    orders.push_back(OrdersGenerator(100, 'B', idB));
-    if (i % 100000 == 0) {
-      lob.seeAskRank();
-      std::cout << '\n';
-      lob.seeBidRank();
-    }
+    auto IDask = LobForGeneration.generateID();
+    auto IDbid = LobForGeneration.generateID();
+    auto ordAsk = OrdersGenerator(100, 'A', IDask);
+    auto ordBid = OrdersGenerator(100, 'B', IDbid);
+    SyntheticData.push_back(ordAsk);
+    SyntheticData.push_back(ordBid);
   }
-
-  // Measurement Loop
   for (auto _ : state) {
-    for (auto &ord : orders) {
-      lob.addOrder(ord);
+    state.PauseTiming();
+    LOB lob;
+    state.ResumeTiming();
+    for (int i = 0; i < numberOrders; i++) {
+      // otherwise the model would drain the quantity of orders in iteration 1
+      // and leave the other iterations loop on 0 quantity
+      Order ordcopy = SyntheticData[i];
+      lob.addOrder(ordcopy);
     }
 
-    // Forces compiler to finish all memory writes before proceeding
     benchmark::ClobberMemory();
-
-    state.PauseTiming();
-    lob.reset(); // Crucial: Clear the state for the next iteration
-    state.ResumeTiming();
   }
-
-  state.SetItemsProcessed(state.iterations() * num_orders * 2);
+  state.SetItemsProcessed(state.iterations() * numberOrders);
 }
-
-BENCHMARK(LOB_Naive_Continuous)->Unit(benchmark::kMicrosecond);
-BENCHMARK_MAIN();
+BENCHMARK(LOB_Naive_Continuous);
